@@ -1,0 +1,12 @@
+#------------------------------------------------------------------------------
+# File:         gpx.fmt
+# Description:  Example ExifTool print format file to generate a GPX track
+#------------------------------------------------------------------------------
+#[HEAD]<?xml version="1.0" encoding="utf-8"?>
+#[HEAD]<gpx version="1.0" creator="ExifTool" xmlns="http://www.topografix.com/GPX/1/0">
+#[HEAD]<trk><name>$filename</name><trkseg>
+#[BODY]<trkpt lat="$gpslatitude#" lon="$gpslongitude#">
+#[BODY]  <ele>$gpsaltitude#</ele>
+#[BODY]  <time>$gpsdatetime</time>
+#[BODY]</trkpt>
+#[TAIL]</trkseg></trk></gpx>

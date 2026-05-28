@@ -168,8 +168,8 @@ static void stamp_to_iso(const char *stamp, char out[21]) {
              stamp, stamp + 4, stamp + 6, stamp + 9, stamp + 11, stamp + 13);
 }
 
-static int run_exiftool_journey(const Clip *clips, size_t count,
-                                const char *fmt_path, const char *out_gpx) {
+static int run_exiftool_for_paths(const char *const *paths, size_t count,
+                                  const char *fmt_path, const char *out_gpx) {
     size_t base = 8;
     char **args = (char **)calloc(base + count + 1, sizeof(char *));
     if (!args) die("calloc");
@@ -183,7 +183,7 @@ static int run_exiftool_journey(const Clip *clips, size_t count,
     args[6] = "-p";
     args[7] = (char *)fmt_path;
     for (size_t i = 0; i < count; i++) {
-        args[base + i] = clips[i].path;
+        args[base + i] = (char *)paths[i];
     }
     args[base + count] = NULL;
 
@@ -208,6 +208,72 @@ static int run_exiftool_journey(const Clip *clips, size_t count,
         return -1;
     }
     return 0;
+}
+
+static int exiftool_can_read(const char *path) {
+    const char *args[] = {
+        "exiftool",
+        "-ee",
+        "-q",
+        "-q",
+        "-p",
+        "$gpsdatetime",
+        path,
+        NULL
+    };
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        int fd = open("/dev/null", O_WRONLY);
+        if (fd >= 0) {
+            dup2(fd, STDOUT_FILENO);
+            dup2(fd, STDERR_FILENO);
+            close(fd);
+        }
+        execvp(args[0], (char *const *)args);
+        _exit(127);
+    } else if (pid < 0) {
+        return 0;
+    }
+
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return (WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
+static int run_exiftool_journey(const Clip *clips, size_t count,
+                                const char *fmt_path, const char *out_gpx) {
+    const char **paths = (const char **)calloc(count, sizeof(char *));
+    if (!paths) die("calloc");
+    for (size_t i = 0; i < count; i++) {
+        paths[i] = clips[i].path;
+    }
+
+    if (run_exiftool_for_paths(paths, count, fmt_path, out_gpx) == 0) {
+        free(paths);
+        return 0;
+    }
+
+    const char **good_paths = (const char **)calloc(count, sizeof(char *));
+    if (!good_paths) die("calloc");
+    size_t good_count = 0;
+    for (size_t i = 0; i < count; i++) {
+        if (exiftool_can_read(clips[i].path)) {
+            good_paths[good_count++] = clips[i].path;
+        } else {
+            fprintf(stderr, "warning: skipping bad clip: %s\n", clips[i].path);
+        }
+    }
+
+    free(paths);
+    if (good_count == 0) {
+        free(good_paths);
+        return -1;
+    }
+
+    int result = run_exiftool_for_paths(good_paths, good_count, fmt_path, out_gpx);
+    free(good_paths);
+    return result;
 }
 
 static void json_write_string(FILE *f, const char *s) {

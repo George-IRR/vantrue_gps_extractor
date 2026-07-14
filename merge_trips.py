@@ -8,35 +8,13 @@ from datetime import datetime
 
 def parse_arguments():
     if len(sys.argv) < 3:
-        print("Usage: python3 merge_trips.py <root_dir> <output_dir> [gap_seconds] [--dry-run <report_file>]", file=sys.stderr)
+        print("Usage: python3 merge_trips.py <root_dir> <output_dir> [gap_seconds]", file=sys.stderr)
         sys.exit(1)
     
     root_dir = sys.argv[1]
     output_dir = sys.argv[2]
-    
-    gap_seconds = 65
-    dry_run_file = None
-    
-    # Parsare parametri opționali
-    args = sys.argv[3:]
-    i = 0
-    while i < len(args):
-        if args[i] == '--dry-run':
-            if i + 1 < len(args):
-                dry_run_file = args[i+1]
-                i += 2
-            else:
-                print("Error: --dry-run requires a target report file path", file=sys.stderr)
-                sys.exit(1)
-        else:
-            try:
-                gap_seconds = int(args[i])
-                i += 1
-            except ValueError:
-                print(f"Error: Invalid argument '{args[i]}'", file=sys.stderr)
-                sys.exit(1)
-                
-    return root_dir, output_dir, gap_seconds, dry_run_file
+    gap_seconds = int(sys.argv[3]) if len(sys.argv) > 3 else 65
+    return root_dir, output_dir, gap_seconds
 
 def get_clips(root_dir):
     clips = []
@@ -83,19 +61,32 @@ def group_into_trips(clips, gap_seconds):
     trips.append(current_trip)
     return trips
 
-def generate_dry_run_report(trips, report_file):
-    with open(report_file, 'w', encoding='utf-8') as f:
-        f.write(f"DRY RUN TRIP REPORT - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write("=" * 70 + "\n\n")
-        for idx, trip in enumerate(trips, start=1):
-            start_str = trip[0]['time'].strftime('%Y-%m-%d %H:%M:%S')
-            end_str = trip[-1]['time'].strftime('%Y-%m-%d %H:%M:%S')
-            f.write(f"Trip #{idx} ({len(trip)} clips) | Start: {start_str} | End: {end_str}\n")
-            f.write("-" * 70 + "\n")
-            for clip in trip:
-                f.write(f"  [{clip['subdir']}] {clip['name']}\n")
-            f.write("\n")
-    print(f"Dry run report successfully written to: {report_file}")
+def parse_selection(selection_str, max_val):
+    selection_str = selection_str.strip().lower()
+    if selection_str == 'all':
+        return list(range(1, max_val + 1))
+    
+    selected = set()
+    parts = selection_str.split(',')
+    for part in parts:
+        part = part.strip()
+        if '-' in part:
+            try:
+                start_str, end_str = part.split('-')
+                start = int(start_str.strip())
+                end = int(end_str.strip())
+                if 1 <= start <= end <= max_val:
+                    selected.update(range(start, end + 1))
+            except ValueError:
+                continue
+        else:
+            try:
+                val = int(part)
+                if 1 <= val <= max_val:
+                    selected.add(val)
+            except ValueError:
+                continue
+    return sorted(list(selected))
 
 def merge_trip(trip, output_dir):
     start_stamp = trip[0]['stamp']
@@ -128,7 +119,7 @@ def merge_trip(trip, output_dir):
         os.unlink(temp_list_path)
 
 def main():
-    root_dir, output_dir, gap_seconds, dry_run_file = parse_arguments()
+    root_dir, output_dir, gap_seconds = parse_arguments()
     
     if not os.path.isdir(root_dir):
         print(f"Error: Root directory '{root_dir}' does not exist.", file=sys.stderr)
@@ -136,18 +127,47 @@ def main():
         
     clips = get_clips(root_dir)
     if not clips:
-        print("No valid MP4 clips found in 'Normal' or 'Event' subdirectories.", file=sys.stderr)
+        print("No valid MP4 clips found.", file=sys.stderr)
         sys.exit(1)
         
     trips = group_into_trips(clips, gap_seconds)
-    print(f"Found {len(clips)} total clips. Grouped into {len(trips)} distinct trips.")
+    total_trips = len(trips)
+    print(f"Found {len(clips)} clips. Grouped into {total_trips} trips.")
+    print("-" * 80)
     
-    if dry_run_file:
-        generate_dry_run_report(trips, dry_run_file)
-    else:
-        os.makedirs(output_dir, exist_ok=True)
-        for trip in trips:
-            merge_trip(trip, output_dir)
+    # Afișare listă simplificată în terminal
+    for idx, trip in enumerate(trips, start=1):
+        start_str = trip[0]['time'].strftime('%Y-%m-%d %H:%M:%S')
+        end_str = trip[-1]['time'].strftime('%Y-%m-%d %H:%M:%S')
+        events = sum(1 for c in trip if c['subdir'] == 'Event')
+        normals = sum(1 for c in trip if c['subdir'] == 'Normal')
+        print(f"[{idx:2d}] Start: {start_str} | End: {end_str} | Clips: {len(trip):2d} (Normal: {normals}, Event: {events})")
+        
+    print("-" * 80)
+    
+    # Solicitare selecție
+    try:
+        user_input = input("Introduceți trip-urile pentru merge (Ex: '1,3,5-8', 'all', 'q' pentru ieșire): ")
+    except (KeyboardInterrupt, EOFError):
+        print("\nAborted.")
+        sys.exit(0)
+        
+    if user_input.strip().lower() in ['q', 'quit', 'exit', '']:
+        print("No trips processed.")
+        sys.exit(0)
+        
+    selected_indices = parse_selection(user_input, total_trips)
+    if not selected_indices:
+        print("Selecție invalidă.")
+        sys.exit(1)
+        
+    print(f"\nS-au selectat {len(selected_indices)} trip-uri pentru îmbinare: {selected_indices}\n")
+    os.makedirs(output_dir, exist_ok=True)
+    
+    for idx in selected_indices:
+        trip = trips[idx - 1]
+        print(f"Procesare Trip #{idx}...")
+        merge_trip(trip, output_dir)
 
 if __name__ == "__main__":
     main()

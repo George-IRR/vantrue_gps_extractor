@@ -1,3 +1,5 @@
 *.gpx
 /journeys.json
 /vantrue_journeys
+/raport_trips.txt
+/output

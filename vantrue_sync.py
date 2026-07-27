@@ -259,8 +259,18 @@ def clear_checkpoint():
         except OSError:
             pass
 
-# --- HELPER FUNCTIONS FOR FILE COPYING & SPEED MEASUREMENT ---
+# --- HELPER FUNCTIONS FOR ZERO SSD WRITE FILE COPYING ---
+def drop_page_cache(filepath):
+    try:
+        fd = os.open(filepath, os.O_RDONLY)
+        if hasattr(os, 'posix_fadvise'):
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        os.close(fd)
+    except Exception:
+        pass
+
 def copy_file_with_speed(src_path, dst_path, buffer_size=1024*1024):
+    drop_page_cache(src_path)
     start_time = time.time()
     total_bytes = os.path.getsize(src_path)
     bytes_read = 0
@@ -274,6 +284,7 @@ def copy_file_with_speed(src_path, dst_path, buffer_size=1024*1024):
             bytes_read += len(buf)
 
     elapsed = time.time() - start_time
+    drop_page_cache(src_path)
     read_speed_mbps = (total_bytes / (1024 * 1024)) / elapsed if elapsed > 0 else 0
     return total_bytes, elapsed, read_speed_mbps
 
@@ -331,7 +342,6 @@ class PrefetchPipeline:
                         'error': 'Insufficient RAM'
                     }
                 
-                # Put in queue (blocks if consumer hasn't popped yet)
                 self.queue.put(item)
 
         self.worker_thread = threading.Thread(target=worker, daemon=True)
@@ -342,6 +352,18 @@ class PrefetchPipeline:
 
     def stop(self):
         self.stop_event.set()
+
+def run_rclone_upload(rclone_bin, local_path, cloud_dest, shm_dir):
+    # Enforce rclone to use /dev/shm for temp buffer to avoid any SSD write
+    cmd = [
+        rclone_bin,
+        "copyto",
+        "--temp-dir", shm_dir,
+        "--drive-chunk-size", "64M",
+        local_path,
+        cloud_dest
+    ]
+    subprocess.run(cmd, check=True)
 
 # --- UPLOAD WITH PREFETCH PIPELINE, SPEED STATS & CHECKPOINTING ---
 def upload_trip(trip, remote_base, fmt_path, mode, shm_dir, usb_dir, completed_trip_ids, completed_clips, dry_run=False):
@@ -376,10 +398,8 @@ def upload_trip(trip, remote_base, fmt_path, mode, shm_dir, usb_dir, completed_t
         if mode == 'ram':
             gpx_fragments = []
             
-            # Filter clips needing processing for prefetch
             unprocessed_clips = [c for c in trip if c['name'] not in completed_clips[trip_id]]
             
-            # Initialize Pipeline
             pipeline = PrefetchPipeline(shm_dir, fmt_path)
             if not dry_run and unprocessed_clips:
                 pipeline.start(unprocessed_clips)
@@ -397,25 +417,23 @@ def upload_trip(trip, remote_base, fmt_path, mode, shm_dir, usb_dir, completed_t
                     completed_clips[trip_id].append(clip['name'])
                     continue
 
-                # Fetch item from background prefetch queue
                 pre_item = pipeline.queue.get()
                 
                 ram_clip_path = pre_item.get('ram_path')
                 frag_gpx = pre_item.get('frag_gpx')
                 read_speed = pre_item.get('read_speed', 0.0)
 
-                print(f"[{idx}/{clip_count}] Prefetched {clip['name']} from SD Card @ {read_speed:.2f} MB/s.")
+                print(f"[{idx}/{clip_count}] Prefetched {clip['name']} from SD Card -> RAM (/dev/shm) @ {read_speed:.2f} MB/s.")
 
-                # Upload to Cloud & Measure Upload Speed
                 upload_start = time.time()
                 source_to_upload = ram_clip_path if (pre_item['success'] and ram_clip_path) else clip['path']
                 
                 try:
-                    subprocess.run([rclone_bin, "copyto", source_to_upload, clip_cloud_dest], check=True)
+                    run_rclone_upload(rclone_bin, source_to_upload, clip_cloud_dest, shm_dir)
                     upload_elapsed = time.time() - upload_start
                     upload_speed = (clip['size'] / (1024 * 1024)) / upload_elapsed if upload_elapsed > 0 else 0
                     
-                    print(f"       -> Uploaded to Cloud @ {upload_speed:.2f} MB/s (SD Read Speed was {read_speed:.2f} MB/s).")
+                    print(f"       -> Uploaded RAM -> Cloud @ {upload_speed:.2f} MB/s (Zero SSD Write).")
                 except Exception as e:
                     print(f"Error uploading clip {clip['name']}: {e}", file=sys.stderr)
                     pipeline.stop()
@@ -424,30 +442,26 @@ def upload_trip(trip, remote_base, fmt_path, mode, shm_dir, usb_dir, completed_t
                 if frag_gpx and os.path.exists(frag_gpx):
                     gpx_fragments.append(frag_gpx)
 
-                # Instantly release RAM space of current uploaded video
                 if ram_clip_path and os.path.exists(ram_clip_path):
                     try:
                         os.unlink(ram_clip_path)
                     except OSError:
                         pass
 
-                # Save Checkpoint
                 completed_clips[trip_id].append(clip['name'])
                 save_checkpoint(usb_dir, remote_base, completed_trip_ids, completed_clips)
 
-            # Generate manifest JSON
             print("Generating manifest.json in RAM (/dev/shm)...")
             if not dry_run:
                 generate_manifest_in_shm(trip, shm_manifest)
                 if os.path.exists(shm_manifest):
-                    subprocess.run([rclone_bin, "copyto", shm_manifest, f"{cloud_dest}/manifest.json"], check=True)
+                    run_rclone_upload(rclone_bin, shm_manifest, f"{cloud_dest}/manifest.json", shm_dir)
 
-            # Consolidate GPX fragments into single journey.gpx
             if not dry_run and gpx_fragments:
                 print("Consolidating GPX in RAM and uploading...")
                 combine_gpx_fragments(gpx_fragments, shm_gpx)
                 if os.path.exists(shm_gpx):
-                    subprocess.run([rclone_bin, "copyto", shm_gpx, f"{cloud_dest}/journey.gpx"], check=True)
+                    run_rclone_upload(rclone_bin, shm_gpx, f"{cloud_dest}/journey.gpx", shm_dir)
                 for frag in gpx_fragments:
                     if os.path.exists(frag):
                         os.unlink(frag)
@@ -463,7 +477,7 @@ def upload_trip(trip, remote_base, fmt_path, mode, shm_dir, usb_dir, completed_t
                 print(f"[{idx}/{len(trip)}] Uploading clip {clip['name']}...")
                 if not dry_run:
                     upload_start = time.time()
-                    subprocess.run([rclone_bin, "copyto", clip['path'], clip_cloud_dest], check=True)
+                    run_rclone_upload(rclone_bin, clip['path'], clip_cloud_dest, shm_dir)
                     upload_elapsed = time.time() - upload_start
                     upload_speed = (clip['size'] / (1024 * 1024)) / upload_elapsed if upload_elapsed > 0 else 0
                     print(f"       -> Uploaded to Cloud @ {upload_speed:.2f} MB/s (Direct SD Mode).")
@@ -481,9 +495,9 @@ def upload_trip(trip, remote_base, fmt_path, mode, shm_dir, usb_dir, completed_t
 
             if not dry_run:
                 if os.path.exists(shm_gpx):
-                    subprocess.run([rclone_bin, "copyto", shm_gpx, f"{cloud_dest}/journey.gpx"], check=True)
+                    run_rclone_upload(rclone_bin, shm_gpx, f"{cloud_dest}/journey.gpx", shm_dir)
                 if os.path.exists(shm_manifest):
-                    subprocess.run([rclone_bin, "copyto", shm_manifest, f"{cloud_dest}/manifest.json"], check=True)
+                    run_rclone_upload(rclone_bin, shm_manifest, f"{cloud_dest}/manifest.json", shm_dir)
 
         if not dry_run:
             completed_trip_ids.add(trip_id)
@@ -500,7 +514,7 @@ def upload_trip(trip, remote_base, fmt_path, mode, shm_dir, usb_dir, completed_t
     print(f"Completed upload for trip: {trip_folder_name}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Vantrue Dashcam Cloud Sync (Zero HDD I/O, Prefetch Pipeline & Checkpoint Resume)")
+    parser = argparse.ArgumentParser(description="Vantrue Dashcam Cloud Sync (Zero SSD Write, Prefetch Pipeline & Checkpoint Resume)")
     parser.add_argument("--usb-dir", required=True, help="Path to mounted USB drive root containing Normal/ and Event/ folders")
     parser.add_argument("--remote", required=True, help="RClone remote destination (e.g. gdrive:Dashcam)")
     parser.add_argument("--gap", type=int, default=65, help="Time gap threshold in seconds for trip grouping (default: 65)")

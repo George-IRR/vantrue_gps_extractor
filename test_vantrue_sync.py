@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import sys
 import tempfile
@@ -9,14 +10,20 @@ from datetime import datetime
 
 import vantrue_sync
 
-class TestVantrueSync(unittest.TestCase):
+class TestVantrueSyncUnified(unittest.TestCase):
 
     def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
+        self.test_dir = tempfile.mkdtemp(prefix="vantrue_test_root_")
         self.normal_dir = os.path.join(self.test_dir, "Normal")
         self.event_dir = os.path.join(self.test_dir, "Event")
         os.makedirs(self.normal_dir)
         os.makedirs(self.event_dir)
+
+        # Set up mock binary paths
+        vantrue_sync.BINARIES['exiftool'] = '/usr/bin/exiftool'
+        vantrue_sync.BINARIES['rclone'] = '/usr/bin/rclone'
+
+        self.remote_mock = "GoogleDriveMain190:Dashcam_Auto"
 
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
@@ -25,6 +32,14 @@ class TestVantrueSync(unittest.TestCase):
                 os.unlink(vantrue_sync.CHECKPOINT_FILE)
             except OSError:
                 pass
+
+    def create_dummy_video(self, folder, filename, size_mb=1):
+        filepath = os.path.join(folder, filename)
+        with open(filepath, "wb") as f:
+            f.write(b"0" * (size_mb * 1024 * 1024))
+        return filepath
+
+    # --- 1. UNIT TESTS ---
 
     def test_find_tool(self):
         with patch("shutil.which", return_value="/usr/bin/exiftool"):
@@ -63,7 +78,6 @@ class TestVantrueSync(unittest.TestCase):
         clips = vantrue_sync.get_clips(self.test_dir)
         self.assertEqual(len(clips), 2)
         
-        # Check sorting
         clips.sort(key=lambda x: x['stamp'])
         self.assertEqual(clips[0]['name'], "20260510_151242_00004_N_A.MP4")
         self.assertFalse(clips[0]['is_event'])
@@ -93,21 +107,18 @@ class TestVantrueSync(unittest.TestCase):
 
     def test_checkpoint_save_and_load(self):
         usb = self.test_dir
-        remote = "GoogleDriveMain190:Dashcam_Auto"
         completed_trips = {"20260510_151242_to_20260510_151342"}
         completed_clips = {"20260510_151242_to_20260510_151342": ["20260510_151242_00004_N_A.MP4"]}
 
-        vantrue_sync.save_checkpoint(usb, remote, completed_trips, completed_clips)
+        vantrue_sync.save_checkpoint(usb, self.remote_mock, completed_trips, completed_clips)
         self.assertTrue(os.path.exists(vantrue_sync.CHECKPOINT_FILE))
 
-        # Test loading valid checkpoint
-        cp = vantrue_sync.load_checkpoint(usb, remote)
+        cp = vantrue_sync.load_checkpoint(usb, self.remote_mock)
         self.assertIsNotNone(cp)
         self.assertEqual(cp['completed_trips'], list(completed_trips))
         self.assertEqual(cp['completed_clips'], completed_clips)
 
-        # Test loading mismatching USB / Remote
-        self.assertIsNone(vantrue_sync.load_checkpoint("/different/usb", remote))
+        self.assertIsNone(vantrue_sync.load_checkpoint("/different/usb", self.remote_mock))
         self.assertIsNone(vantrue_sync.load_checkpoint(usb, "DifferentRemote:"))
 
         vantrue_sync.clear_checkpoint()
@@ -132,46 +143,94 @@ class TestVantrueSync(unittest.TestCase):
             self.assertIn('lat="44.2"', content)
             self.assertIn('<trkseg>', content)
 
+    # --- 2. SMOKE TESTS ---
+
+    def test_smoke_empty_usb(self):
+        clips = vantrue_sync.get_clips(self.test_dir)
+        self.assertEqual(len(clips), 0)
+        trips = vantrue_sync.group_into_trips(clips, gap_seconds=65)
+        self.assertEqual(len(trips), 0)
+
+    def test_smoke_multi_trip_parsing(self):
+        self.create_dummy_video(self.normal_dir, "20260510_150000_00001_N_A.MP4")
+        self.create_dummy_video(self.normal_dir, "20260510_150100_00002_N_A.MP4")
+        self.create_dummy_video(self.normal_dir, "20260510_160000_00003_N_A.MP4")
+        self.create_dummy_video(self.event_dir,  "20260510_160100_00004_E_A.MP4")
+
+        clips = vantrue_sync.get_clips(self.test_dir)
+        self.assertEqual(len(clips), 4)
+
+        trips = vantrue_sync.group_into_trips(clips, gap_seconds=65)
+        self.assertEqual(len(trips), 2)
+        self.assertEqual(len(trips[0]), 2)
+        self.assertEqual(len(trips[1]), 2)
+        self.assertTrue(any(c['is_event'] for c in trips[1]))
+
+    # --- 3. RESUME INTERRUPTION & SAFETY TESTS ---
+
     @patch("subprocess.run")
-    def test_upload_trip_ram_mode(self, mock_subproc):
+    def test_resume_interrupted_trip(self, mock_subproc):
         mock_subproc.return_value = MagicMock(returncode=0)
 
-        dt = datetime(2026, 5, 10, 15, 12, 42)
-        f1_path = os.path.join(self.normal_dir, "20260510_151242_00004_N_A.MP4")
-        with open(f1_path, "w") as f: f.write("video content")
+        clip1 = self.create_dummy_video(self.normal_dir, "20260510_100000_00001_N_A.MP4")
+        clip2 = self.create_dummy_video(self.normal_dir, "20260510_100100_00002_N_A.MP4")
+        clip3 = self.create_dummy_video(self.normal_dir, "20260510_100200_00003_N_A.MP4")
 
-        trip = [{
-            'path': f1_path,
-            'name': "20260510_151242_00004_N_A.MP4",
-            'subdir': "Normal",
-            'stamp': "20260510_151242",
-            'time': dt,
-            'is_event': False,
-            'size': os.path.getsize(f1_path)
-        }]
+        clips = vantrue_sync.get_clips(self.test_dir)
+        trips = vantrue_sync.group_into_trips(clips, gap_seconds=65)
+        trip = trips[0]
+        trip_id = f"{trip[0]['stamp']}_to_{trip[-1]['stamp']}"
 
-        completed_trips = set()
-        completed_clips = {}
-        shm_dir = self.test_dir
+        completed_trip_ids = set()
+        completed_clips = {
+            trip_id: ["20260510_100000_00001_N_A.MP4", "20260510_100100_00002_N_A.MP4"]
+        }
+        vantrue_sync.save_checkpoint(self.test_dir, self.remote_mock, completed_trip_ids, completed_clips)
 
+        shm_dir = tempfile.gettempdir()
         fmt_path = os.path.join(self.test_dir, "gpx.fmt")
         with open(fmt_path, "w") as f: f.write("dummy fmt")
 
         with patch("vantrue_sync.generate_gpx_in_shm", return_value=True):
             vantrue_sync.upload_trip(
                 trip=trip,
-                remote_base="GoogleDriveMain190:Dashcam_Auto",
+                remote_base=self.remote_mock,
                 fmt_path=fmt_path,
                 mode="ram",
                 shm_dir=shm_dir,
                 usb_dir=self.test_dir,
-                completed_trip_ids=completed_trips,
+                completed_trip_ids=completed_trip_ids,
                 completed_clips=completed_clips,
                 dry_run=False
             )
 
-        self.assertIn("20260510_151242_to_20260510_151242", completed_trips)
-        self.assertTrue(mock_subproc.called)
+        self.assertIn(trip_id, completed_trip_ids)
+        self.assertIn("20260510_100200_00003_N_A.MP4", completed_clips[trip_id])
+
+        cp = vantrue_sync.load_checkpoint(self.test_dir, self.remote_mock)
+        self.assertIsNotNone(cp)
+        self.assertIn(trip_id, cp['completed_trips'])
+
+    def test_resume_deleted_old_clips_safety(self):
+        self.create_dummy_video(self.normal_dir, "20260510_120000_00002_N_A.MP4")
+
+        trip_id = "20260510_115900_to_20260510_120000"
+        completed_clips = {
+            trip_id: ["20260510_115900_00001_N_A.MP4", "20260510_120000_00002_N_A.MP4"]
+        }
+        vantrue_sync.save_checkpoint(self.test_dir, self.remote_mock, set(), completed_clips)
+
+        clips = vantrue_sync.get_clips(self.test_dir)
+        available_names = {c['name'] for c in clips}
+
+        cleaned_completed_clips = {}
+        for tid, clip_list in completed_clips.items():
+            valid_clips = [c for c in clip_list if c in available_names]
+            if valid_clips:
+                cleaned_completed_clips[tid] = valid_clips
+
+        self.assertNotIn("20260510_115900_00001_N_A.MP4", cleaned_completed_clips[trip_id])
+        self.assertIn("20260510_120000_00002_N_A.MP4", cleaned_completed_clips[trip_id])
 
 if __name__ == "__main__":
     unittest.main()

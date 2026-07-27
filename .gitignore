@@ -4,3 +4,4 @@
 /raport_trips.txt
 /output
 /__pycache__/
+/.sync_checkpoint.json

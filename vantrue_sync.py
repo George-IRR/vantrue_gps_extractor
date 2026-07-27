@@ -7,6 +7,9 @@ import argparse
 import subprocess
 import tempfile
 import json
+import time
+import threading
+import queue
 from datetime import datetime
 
 BINARIES = {}
@@ -113,7 +116,7 @@ def run_exiftool_for_paths(paths, fmt_path, out_gpx_path):
     
     try:
         with open(out_gpx_path, "wb") as out_f:
-            res = subprocess.run(cmd, stdout=out_f, stderr=subprocess.PIPE, check=True)
+            subprocess.run(cmd, stdout=out_f, stderr=subprocess.PIPE, check=True)
         return True
     except subprocess.CalledProcessError:
         return False
@@ -230,7 +233,6 @@ def load_checkpoint(usb_dir, remote):
     try:
         with open(CHECKPOINT_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            # Validate that the checkpoint belongs to the exact same USB drive and remote!
             if data.get("usb_dir") == os.path.abspath(usb_dir) and data.get("remote") == remote:
                 return data
     except Exception as e:
@@ -243,7 +245,7 @@ def save_checkpoint(usb_dir, remote, completed_trip_ids, completed_clips):
         "remote": remote,
         "updated_at": datetime.now().isoformat(),
         "completed_trips": list(completed_trip_ids),
-        "completed_clips": completed_clips  # dict: {trip_id: [clip_names]}
+        "completed_clips": completed_clips
     }
     temp_cp = f"{CHECKPOINT_FILE}.tmp"
     with open(temp_cp, 'w', encoding='utf-8') as f:
@@ -257,7 +259,91 @@ def clear_checkpoint():
         except OSError:
             pass
 
-# --- UPLOAD WITH RESUME & CHECKPOINTING ---
+# --- HELPER FUNCTIONS FOR FILE COPYING & SPEED MEASUREMENT ---
+def copy_file_with_speed(src_path, dst_path, buffer_size=1024*1024):
+    start_time = time.time()
+    total_bytes = os.path.getsize(src_path)
+    bytes_read = 0
+
+    with open(src_path, 'rb') as fsrc, open(dst_path, 'wb') as fdst:
+        while True:
+            buf = fsrc.read(buffer_size)
+            if not buf:
+                break
+            fdst.write(buf)
+            bytes_read += len(buf)
+
+    elapsed = time.time() - start_time
+    read_speed_mbps = (total_bytes / (1024 * 1024)) / elapsed if elapsed > 0 else 0
+    return total_bytes, elapsed, read_speed_mbps
+
+# --- BACKGROUND PREFETCHING WORKER CLASS ---
+class PrefetchPipeline:
+    def __init__(self, shm_dir, fmt_path):
+        self.shm_dir = shm_dir
+        self.fmt_path = fmt_path
+        self.queue = queue.Queue(maxsize=1)  # Buffer 1 clip ahead in RAM
+        self.stop_event = threading.Event()
+        self.worker_thread = None
+
+    def start(self, clips_to_prefetch):
+        def worker():
+            for idx, clip in enumerate(clips_to_prefetch):
+                if self.stop_event.is_set():
+                    break
+                
+                req_space = clip['size'] + (50 * 1024 * 1024)
+                ok, _ = check_free_space(self.shm_dir, req_space)
+                
+                ram_clip_path = os.path.join(self.shm_dir, f"prefetch_clip_{idx}.mp4")
+                frag_gpx = os.path.join(self.shm_dir, f"prefetch_frag_{idx}.gpx")
+                
+                if ok:
+                    try:
+                        bytes_read, elapsed, speed = copy_file_with_speed(clip['path'], ram_clip_path)
+                        generate_gpx_in_shm([{'path': ram_clip_path}], self.fmt_path, frag_gpx)
+                        item = {
+                            'clip': clip,
+                            'ram_path': ram_clip_path,
+                            'frag_gpx': frag_gpx,
+                            'read_speed': speed,
+                            'read_bytes': bytes_read,
+                            'success': True
+                        }
+                    except Exception as e:
+                        item = {
+                            'clip': clip,
+                            'ram_path': None,
+                            'frag_gpx': None,
+                            'read_speed': 0,
+                            'read_bytes': 0,
+                            'success': False,
+                            'error': str(e)
+                        }
+                else:
+                    item = {
+                        'clip': clip,
+                        'ram_path': None,
+                        'frag_gpx': None,
+                        'read_speed': 0,
+                        'read_bytes': 0,
+                        'success': False,
+                        'error': 'Insufficient RAM'
+                    }
+                
+                # Put in queue (blocks if consumer hasn't popped yet)
+                self.queue.put(item)
+
+        self.worker_thread = threading.Thread(target=worker, daemon=True)
+        self.worker_thread.start()
+
+    def get_next(self):
+        return self.queue.get()
+
+    def stop(self):
+        self.stop_event.set()
+
+# --- UPLOAD WITH PREFETCH PIPELINE, SPEED STATS & CHECKPOINTING ---
 def upload_trip(trip, remote_base, fmt_path, mode, shm_dir, usb_dir, completed_trip_ids, completed_clips, dry_run=False):
     start_stamp = trip[0]['stamp']
     end_stamp = trip[-1]['stamp']
@@ -281,7 +367,7 @@ def upload_trip(trip, remote_base, fmt_path, mode, shm_dir, usb_dir, completed_t
     
     if trip_id not in completed_clips:
         completed_clips[trip_id] = []
-        
+
     try:
         print(f"Creating cloud folder: {cloud_dest}")
         if not dry_run:
@@ -290,55 +376,73 @@ def upload_trip(trip, remote_base, fmt_path, mode, shm_dir, usb_dir, completed_t
         if mode == 'ram':
             gpx_fragments = []
             
+            # Filter clips needing processing for prefetch
+            unprocessed_clips = [c for c in trip if c['name'] not in completed_clips[trip_id]]
+            
+            # Initialize Pipeline
+            pipeline = PrefetchPipeline(shm_dir, fmt_path)
+            if not dry_run and unprocessed_clips:
+                pipeline.start(unprocessed_clips)
+
+            clip_count = len(trip)
             for idx, clip in enumerate(trip, start=1):
                 clip_cloud_dest = f"{cloud_dest}/{clip['name']}"
                 
-                # Checkpoint check per clip
                 if clip['name'] in completed_clips[trip_id]:
-                    print(f"[{idx}/{len(trip)}] [SKIP] Clip {clip['name']} already uploaded.")
+                    print(f"[{idx}/{clip_count}] [SKIP] Clip {clip['name']} already uploaded.")
                     continue
 
-                print(f"[{idx}/{len(trip)}] Buffering in RAM & Uploading {clip['name']}...")
-                
-                req_space = clip['size'] + (50 * 1024 * 1024)
-                ok, free_b = check_free_space(shm_dir, req_space)
-                
-                ram_clip_path = os.path.join(shm_dir, f"clip_{idx}.mp4")
-                source_path_for_gpx = clip['path']
-                
                 if dry_run:
+                    print(f"[{idx}/{clip_count}] [DRY-RUN] Would buffer & upload {clip['name']}")
+                    completed_clips[trip_id].append(clip['name'])
                     continue
-                    
-                if ok:
-                    try:
-                        shutil.copyfile(clip['path'], ram_clip_path)
-                        source_path_for_gpx = ram_clip_path
-                        subprocess.run([rclone_bin, "copyto", ram_clip_path, clip_cloud_dest], check=True)
-                    except Exception as e:
-                        print(f"Warning: RAM buffer failed for {clip['name']}: {e}. Direct USB upload fallback.", file=sys.stderr)
-                        subprocess.run([rclone_bin, "copyto", clip['path'], clip_cloud_dest], check=True)
-                else:
-                    print(f"Warning: Insufficient RAM for {clip['name']}. Direct USB upload fallback.", file=sys.stderr)
-                    subprocess.run([rclone_bin, "copyto", clip['path'], clip_cloud_dest], check=True)
-                
-                # Extract GPX fragment
-                frag_gpx = os.path.join(shm_dir, f"frag_{idx}.gpx")
-                if generate_gpx_in_shm([{'path': source_path_for_gpx}], fmt_path, frag_gpx):
-                    gpx_fragments.append(frag_gpx)
-                    
-                if os.path.exists(ram_clip_path):
-                    os.unlink(ram_clip_path)
 
-                # Record clip success in checkpoint
+                # Fetch item from background prefetch queue
+                pre_item = pipeline.queue.get()
+                
+                ram_clip_path = pre_item.get('ram_path')
+                frag_gpx = pre_item.get('frag_gpx')
+                read_speed = pre_item.get('read_speed', 0.0)
+
+                print(f"[{idx}/{clip_count}] Prefetched {clip['name']} from SD Card @ {read_speed:.2f} MB/s.")
+
+                # Upload to Cloud & Measure Upload Speed
+                upload_start = time.time()
+                source_to_upload = ram_clip_path if (pre_item['success'] and ram_clip_path) else clip['path']
+                
+                try:
+                    subprocess.run([rclone_bin, "copyto", source_to_upload, clip_cloud_dest], check=True)
+                    upload_elapsed = time.time() - upload_start
+                    upload_speed = (clip['size'] / (1024 * 1024)) / upload_elapsed if upload_elapsed > 0 else 0
+                    
+                    print(f"       -> Uploaded to Cloud @ {upload_speed:.2f} MB/s (SD Read Speed was {read_speed:.2f} MB/s).")
+                except Exception as e:
+                    print(f"Error uploading clip {clip['name']}: {e}", file=sys.stderr)
+                    pipeline.stop()
+                    raise
+
+                if frag_gpx and os.path.exists(frag_gpx):
+                    gpx_fragments.append(frag_gpx)
+
+                # Instantly release RAM space of current uploaded video
+                if ram_clip_path and os.path.exists(ram_clip_path):
+                    try:
+                        os.unlink(ram_clip_path)
+                    except OSError:
+                        pass
+
+                # Save Checkpoint
                 completed_clips[trip_id].append(clip['name'])
                 save_checkpoint(usb_dir, remote_base, completed_trip_ids, completed_clips)
 
+            # Generate manifest JSON
             print("Generating manifest.json in RAM (/dev/shm)...")
             if not dry_run:
                 generate_manifest_in_shm(trip, shm_manifest)
                 if os.path.exists(shm_manifest):
                     subprocess.run([rclone_bin, "copyto", shm_manifest, f"{cloud_dest}/manifest.json"], check=True)
 
+            # Consolidate GPX fragments into single journey.gpx
             if not dry_run and gpx_fragments:
                 print("Consolidating GPX in RAM and uploading...")
                 combine_gpx_fragments(gpx_fragments, shm_gpx)
@@ -358,7 +462,12 @@ def upload_trip(trip, remote_base, fmt_path, mode, shm_dir, usb_dir, completed_t
 
                 print(f"[{idx}/{len(trip)}] Uploading clip {clip['name']}...")
                 if not dry_run:
+                    upload_start = time.time()
                     subprocess.run([rclone_bin, "copyto", clip['path'], clip_cloud_dest], check=True)
+                    upload_elapsed = time.time() - upload_start
+                    upload_speed = (clip['size'] / (1024 * 1024)) / upload_elapsed if upload_elapsed > 0 else 0
+                    print(f"       -> Uploaded to Cloud @ {upload_speed:.2f} MB/s (Direct SD Mode).")
+
                     completed_clips[trip_id].append(clip['name'])
                     save_checkpoint(usb_dir, remote_base, completed_trip_ids, completed_clips)
 
@@ -376,7 +485,6 @@ def upload_trip(trip, remote_base, fmt_path, mode, shm_dir, usb_dir, completed_t
                 if os.path.exists(shm_manifest):
                     subprocess.run([rclone_bin, "copyto", shm_manifest, f"{cloud_dest}/manifest.json"], check=True)
 
-        # Mark whole trip as completed in checkpoint
         if not dry_run:
             completed_trip_ids.add(trip_id)
             save_checkpoint(usb_dir, remote_base, completed_trip_ids, completed_clips)
@@ -392,12 +500,12 @@ def upload_trip(trip, remote_base, fmt_path, mode, shm_dir, usb_dir, completed_t
     print(f"Completed upload for trip: {trip_folder_name}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Vantrue Dashcam Cloud Sync (Zero HDD I/O & Checkpoint Resume)")
+    parser = argparse.ArgumentParser(description="Vantrue Dashcam Cloud Sync (Zero HDD I/O, Prefetch Pipeline & Checkpoint Resume)")
     parser.add_argument("--usb-dir", required=True, help="Path to mounted USB drive root containing Normal/ and Event/ folders")
     parser.add_argument("--remote", required=True, help="RClone remote destination (e.g. gdrive:Dashcam)")
     parser.add_argument("--gap", type=int, default=65, help="Time gap threshold in seconds for trip grouping (default: 65)")
     parser.add_argument("--fmt", default="gpx.fmt", help="Path to ExifTool GPX format file (default: gpx.fmt)")
-    parser.add_argument("--mode", choices=["direct", "ram"], default="ram", help="Transfer mode: 'direct' (USB->Cloud) or 'ram' (RAM buffered) (default: ram)")
+    parser.add_argument("--mode", choices=["direct", "ram"], default="ram", help="Transfer mode: 'direct' (USB->Cloud) or 'ram' (RAM prefetch pipeline) (default: ram)")
     parser.add_argument("--resume", action="store_true", help="Resume previous sync session from checkpoint if available")
     parser.add_argument("--dry-run", action="store_true", help="Simulate actions without performing actual uploads")
     
@@ -419,7 +527,6 @@ def main():
             print(f"Error: GPX format file '{args.fmt}' not found.", file=sys.stderr)
             sys.exit(1)
             
-    # --- CHECKPOINT VALIDATION & RESUME LOGIC ---
     checkpoint = load_checkpoint(args.usb_dir, args.remote)
     completed_trip_ids = set()
     completed_clips = {}
@@ -444,10 +551,8 @@ def main():
         print("No valid MP4 clips found in Normal/ or Event/.", file=sys.stderr)
         sys.exit(1)
         
-    # Get current available clip names on USB
     available_clip_names = {c['name'] for c in clips}
     
-    # Filter out completed clips from checkpoint that NO LONGER exist on the USB card
     if args.resume and completed_clips:
         cleaned_completed_clips = {}
         for trip_id, clip_list in completed_clips.items():
@@ -500,7 +605,6 @@ def main():
         upload_trip(trip, args.remote, args.fmt, args.mode, shm_dir, args.usb_dir, completed_trip_ids, completed_clips, dry_run=args.dry_run)
         
     print("\nAll selected trips have been processed successfully!")
-    # Clear checkpoint file upon complete successful finish
     clear_checkpoint()
 
 if __name__ == "__main__":

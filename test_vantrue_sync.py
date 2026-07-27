@@ -19,7 +19,6 @@ class TestVantrueSyncUnified(unittest.TestCase):
         os.makedirs(self.normal_dir)
         os.makedirs(self.event_dir)
 
-        # Set up mock binary paths
         vantrue_sync.BINARIES['exiftool'] = '/usr/bin/exiftool'
         vantrue_sync.BINARIES['rclone'] = '/usr/bin/rclone'
 
@@ -143,6 +142,17 @@ class TestVantrueSyncUnified(unittest.TestCase):
             self.assertIn('lat="44.2"', content)
             self.assertIn('<trkseg>', content)
 
+    def test_copy_file_with_speed(self):
+        src = os.path.join(self.test_dir, "src.bin")
+        dst = os.path.join(self.test_dir, "dst.bin")
+        with open(src, "wb") as f:
+            f.write(b"X" * (2 * 1024 * 1024))
+        
+        bytes_read, elapsed, speed = vantrue_sync.copy_file_with_speed(src, dst)
+        self.assertEqual(bytes_read, 2 * 1024 * 1024)
+        self.assertTrue(os.path.exists(dst))
+        self.assertGreater(speed, 0)
+
     # --- 2. SMOKE TESTS ---
 
     def test_smoke_empty_usb(self):
@@ -166,10 +176,10 @@ class TestVantrueSyncUnified(unittest.TestCase):
         self.assertEqual(len(trips[1]), 2)
         self.assertTrue(any(c['is_event'] for c in trips[1]))
 
-    # --- 3. RESUME INTERRUPTION & SAFETY TESTS ---
+    # --- 3. RESUME INTERRUPTION & PREFETCH PIPELINE TESTS ---
 
     @patch("subprocess.run")
-    def test_resume_interrupted_trip(self, mock_subproc):
+    def test_resume_interrupted_trip_with_pipeline(self, mock_subproc):
         mock_subproc.return_value = MagicMock(returncode=0)
 
         clip1 = self.create_dummy_video(self.normal_dir, "20260510_100000_00001_N_A.MP4")

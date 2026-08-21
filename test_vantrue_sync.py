@@ -242,5 +242,47 @@ class TestVantrueSyncUnified(unittest.TestCase):
         self.assertNotIn("20260510_115900_00001_N_A.MP4", cleaned_completed_clips[trip_id])
         self.assertIn("20260510_120000_00002_N_A.MP4", cleaned_completed_clips[trip_id])
 
+    # --- 4. RCLONE REMOTE VALIDATION & NORMALIZATION TESTS ---
+
+    def test_get_rclone_remotes(self):
+        mock_output = "Google_Drive_190:\nOneDrive:\n"
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout=mock_output)
+            remotes = vantrue_sync.get_rclone_remotes()
+            self.assertEqual(remotes, ["Google_Drive_190:", "OneDrive:"])
+
+    def test_validate_and_normalize_remote_auto_colon(self):
+        with patch("vantrue_sync.get_rclone_remotes", return_value=["Google_Drive_190:", "OneDrive:"]):
+            # User passed without colon
+            normalized = vantrue_sync.validate_and_normalize_remote("Google_Drive_190")
+            self.assertEqual(normalized, "Google_Drive_190:")
+
+            # User passed with subfolder without colon
+            normalized_sub = vantrue_sync.validate_and_normalize_remote("Google_Drive_190/Dashcam")
+            self.assertEqual(normalized_sub, "Google_Drive_190:Dashcam")
+
+            # User passed standard rclone format
+            normalized_standard = vantrue_sync.validate_and_normalize_remote("Google_Drive_190:Dashcam_Auto")
+            self.assertEqual(normalized_standard, "Google_Drive_190:Dashcam_Auto")
+
+    def test_validate_and_normalize_remote_local_error(self):
+        with patch("vantrue_sync.get_rclone_remotes", return_value=["Google_Drive_190:"]):
+            with patch("sys.exit") as mock_exit:
+                vantrue_sync.validate_and_normalize_remote("non_remote_local_folder", allow_local=False)
+                mock_exit.assert_called_with(1)
+
+    def test_validate_and_normalize_remote_local_allowed(self):
+        with patch("vantrue_sync.get_rclone_remotes", return_value=["Google_Drive_190:"]):
+            res = vantrue_sync.validate_and_normalize_remote("./local_folder", allow_local=True)
+            self.assertEqual(res, "./local_folder")
+
+    def test_get_removable_dashcam_drives(self):
+        import vantrue_tui
+        with patch("glob.glob", return_value=[self.test_dir]), \
+             patch("psutil.disk_partitions", return_value=[]):
+            drives = vantrue_tui.get_removable_dashcam_drives()
+            self.assertEqual(len(drives), 1)
+            self.assertEqual(drives[0]['path'], self.test_dir)
+
 if __name__ == "__main__":
     unittest.main()

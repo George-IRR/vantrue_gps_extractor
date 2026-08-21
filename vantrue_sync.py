@@ -42,6 +42,47 @@ def check_dependencies():
         print("Please install them before running this script.", file=sys.stderr)
         sys.exit(1)
 
+def get_rclone_remotes():
+    rclone_bin = BINARIES.get('rclone') or find_tool('rclone') or 'rclone'
+    try:
+        res = subprocess.run([rclone_bin, "listremotes"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+        remotes = [r.strip() for r in res.stdout.splitlines() if r.strip()]
+        return remotes
+    except Exception:
+        return []
+
+def validate_and_normalize_remote(remote_str, allow_local=False):
+    if not remote_str:
+        return None
+    remote_str = remote_str.strip()
+    remotes = get_rclone_remotes()
+    
+    # Check if user specified a remote without trailing colon (e.g. 'Google_Drive_190' or 'Google_Drive_190/Subfolder')
+    if ":" not in remote_str:
+        candidate_remote = f"{remote_str}:"
+        if candidate_remote in remotes:
+            print(f"⚠️ Notice: Added missing colon ':' to remote '{remote_str}' -> '{candidate_remote}'")
+            return candidate_remote
+        
+        parts = remote_str.split('/', 1)
+        prefix_remote = f"{parts[0]}:"
+        if prefix_remote in remotes:
+            normalized = f"{parts[0]}:{parts[1]}" if len(parts) > 1 else prefix_remote
+            print(f"⚠️ Notice: Normalized remote format '{remote_str}' -> '{normalized}'")
+            return normalized
+        
+        # If not a known remote and no colon, it's a local folder path
+        if not allow_local:
+            print(f"\n❌ EROARE DESTINAȚIE: '{remote_str}' NU este un remote rclone valid (lipsește caracterul ':').", file=sys.stderr)
+            print(f"   Dacă rulați cu '{remote_str}', fișierele NU se vor încărca în cloud, ci se vor crea într-un folder local pe disc!", file=sys.stderr)
+            if remotes:
+                print(f"   Remote-uri cloud configurate găsite în rclone: {', '.join(remotes)}", file=sys.stderr)
+                print(f"   Exemplu de utilizare corectă: --remote {remotes[0]}Dashcam", file=sys.stderr)
+            print(f"   Dacă doriți INTENȚIONAT salvarea într-un folder local, adăugați parametrul '--allow-local-dest'.\n", file=sys.stderr)
+            sys.exit(1)
+            
+    return remote_str
+
 def get_shm_dir():
     shm = "/dev/shm"
     if os.path.exists(shm) and os.access(shm, os.W_OK):
@@ -514,19 +555,31 @@ def upload_trip(trip, remote_base, fmt_path, mode, shm_dir, usb_dir, completed_t
     print(f"Completed upload for trip: {trip_folder_name}")
 
 def main():
+    if len(sys.argv) == 1 or "--tui" in sys.argv:
+        try:
+            import vantrue_tui
+            vantrue_tui.main()
+            return
+        except ImportError:
+            pass
+
     parser = argparse.ArgumentParser(description="Vantrue Dashcam Cloud Sync (Zero SSD Write, Prefetch Pipeline & Checkpoint Resume)")
     parser.add_argument("--usb-dir", required=True, help="Path to mounted USB drive root containing Normal/ and Event/ folders")
-    parser.add_argument("--remote", required=True, help="RClone remote destination (e.g. gdrive:Dashcam)")
+    parser.add_argument("--remote", required=True, help="RClone remote destination (e.g. Google_Drive_190:Dashcam)")
     parser.add_argument("--gap", type=int, default=65, help="Time gap threshold in seconds for trip grouping (default: 65)")
     parser.add_argument("--fmt", default="gpx.fmt", help="Path to ExifTool GPX format file (default: gpx.fmt)")
     parser.add_argument("--mode", choices=["direct", "ram"], default="ram", help="Transfer mode: 'direct' (USB->Cloud) or 'ram' (RAM prefetch pipeline) (default: ram)")
     parser.add_argument("--resume", action="store_true", help="Resume previous sync session from checkpoint if available")
     parser.add_argument("--dry-run", action="store_true", help="Simulate actions without performing actual uploads")
+    parser.add_argument("--allow-local-dest", action="store_true", help="Explicitly permit saving to a local disk directory instead of an rclone cloud remote")
+    parser.add_argument("--tui", action="store_true", help="Launch interactive Terminal UI (TUI)")
     
     args = parser.parse_args()
     
     check_dependencies()
     shm_dir = get_shm_dir()
+    
+    args.remote = validate_and_normalize_remote(args.remote, allow_local=args.allow_local_dest)
     
     if not os.path.isdir(args.usb_dir):
         print(f"Error: USB root directory '{args.usb_dir}' does not exist.", file=sys.stderr)

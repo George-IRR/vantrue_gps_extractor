@@ -135,7 +135,7 @@ def main():
     print(f"Found {len(clips)} clips. Grouped into {total_trips} trips.")
     print("-" * 80)
     
-    # Afișare listă simplificată în terminal
+    # Display simplified list in terminal
     for idx, trip in enumerate(trips, start=1):
         start_str = trip[0]['time'].strftime('%Y-%m-%d %H:%M:%S')
         end_str = trip[-1]['time'].strftime('%Y-%m-%d %H:%M:%S')
@@ -145,9 +145,9 @@ def main():
         
     print("-" * 80)
     
-    # Solicitare selecție
+    # Prompt for selection
     try:
-        user_input = input("Introduceți trip-urile pentru merge (Ex: '1,3,5-8', 'all', 'q' pentru ieșire): ")
+        user_input = input("Enter trips to merge (e.g. '1,3,5-8', 'all', 'q' to quit): ")
     except (KeyboardInterrupt, EOFError):
         print("\nAborted.")
         sys.exit(0)
@@ -158,15 +158,15 @@ def main():
         
     selected_indices = parse_selection(user_input, total_trips)
     if not selected_indices:
-        print("Selecție invalidă.")
+        print("Invalid selection.")
         sys.exit(1)
         
-    print(f"\nS-au selectat {len(selected_indices)} trip-uri pentru îmbinare: {selected_indices}\n")
+    print(f"\nSelected {len(selected_indices)} trip(s) for merge: {selected_indices}\n")
     os.makedirs(output_dir, exist_ok=True)
     
     for idx in selected_indices:
         trip = trips[idx - 1]
-        print(f"Procesare Trip #{idx}...")
+        print(f"Processing trip #{idx}...")
         merge_trip(trip, output_dir)
 
 if __name__ == "__main__":

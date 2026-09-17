@@ -61,24 +61,24 @@ def validate_and_normalize_remote(remote_str, allow_local=False):
     if ":" not in remote_str:
         candidate_remote = f"{remote_str}:"
         if candidate_remote in remotes:
-            print(f"⚠️ Notice: Added missing colon ':' to remote '{remote_str}' -> '{candidate_remote}'")
+            print(f"Notice: Added missing colon ':' to remote '{remote_str}' -> '{candidate_remote}'")
             return candidate_remote
         
         parts = remote_str.split('/', 1)
         prefix_remote = f"{parts[0]}:"
         if prefix_remote in remotes:
             normalized = f"{parts[0]}:{parts[1]}" if len(parts) > 1 else prefix_remote
-            print(f"⚠️ Notice: Normalized remote format '{remote_str}' -> '{normalized}'")
+            print(f"Notice: Normalized remote format '{remote_str}' -> '{normalized}'")
             return normalized
         
         # If not a known remote and no colon, it's a local folder path
         if not allow_local:
-            print(f"\n❌ EROARE DESTINAȚIE: '{remote_str}' NU este un remote rclone valid (lipsește caracterul ':').", file=sys.stderr)
-            print(f"   Dacă rulați cu '{remote_str}', fișierele NU se vor încărca în cloud, ci se vor crea într-un folder local pe disc!", file=sys.stderr)
+            print(f"\nError: Destination '{remote_str}' is not a valid rclone remote (missing ':' character).", file=sys.stderr)
+            print(f"   If you run with '{remote_str}', files will not be uploaded to cloud, but saved to a local disk folder instead!", file=sys.stderr)
             if remotes:
-                print(f"   Remote-uri cloud configurate găsite în rclone: {', '.join(remotes)}", file=sys.stderr)
-                print(f"   Exemplu de utilizare corectă: --remote {remotes[0]}Dashcam", file=sys.stderr)
-            print(f"   Dacă doriți INTENȚIONAT salvarea într-un folder local, adăugați parametrul '--allow-local-dest'.\n", file=sys.stderr)
+                print(f"   Configured rclone remotes found: {', '.join(remotes)}", file=sys.stderr)
+                print(f"   Example: --remote {remotes[0]}Dashcam", file=sys.stderr)
+            print(f"   To intentionally save to a local folder, add '--allow-local-dest'.\n", file=sys.stderr)
             sys.exit(1)
             
     return remote_str

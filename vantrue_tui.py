@@ -89,90 +89,90 @@ def select_source_drive():
     """
     Prompts user to select from detected removable dashcam drives or browse manually.
     """
-    console.print(Panel("[bold cyan]PASUL 1: Selectare Sursă Video (Card SD / USB Dashcam)[/bold cyan]", border_style="cyan"))
+    console.print(Panel("[bold cyan]STEP 1: Select Video Source (SD Card / Dashcam USB)[/bold cyan]", border_style="cyan"))
     
     drives = get_removable_dashcam_drives()
     
-    table = Table(title="Dispozitive Dashcam Detectate Automat", box=box.ROUNDED)
+    table = Table(title="Automatically Detected Dashcam Devices", box=box.ROUNDED)
     table.add_column("#", style="bold yellow", justify="center", width=4)
-    table.add_column("Nume Dispozitiv / Volum", style="bold white")
-    table.add_column("Cale Montare", style="green")
-    table.add_column("Clipuri Găsite", style="magenta")
-    table.add_column("Spațiu Liber", style="blue")
+    table.add_column("Device / Volume Name", style="bold white")
+    table.add_column("Mount Path", style="green")
+    table.add_column("Clips Found", style="magenta")
+    table.add_column("Free Space", style="blue")
 
     for idx, d in enumerate(drives, start=1):
-        clip_info = f"{d['clips_total']} clipuri ({d['normal_count']} Normal, {d['event_count']} Event)"
-        space_info = f"{d['free_gb']:.1f} GB liber / {d['total_gb']:.1f} GB"
+        clip_info = f"{d['clips_total']} clips ({d['normal_count']} Normal, {d['event_count']} Event)"
+        space_info = f"{d['free_gb']:.1f} GB free / {d['total_gb']:.1f} GB"
         table.add_row(str(idx), d['name'], d['path'], clip_info, space_info)
 
     browse_idx = len(drives) + 1
-    table.add_row(str(browse_idx), "[italic]📁 Introducere cale manuală / Browse folder[/italic]", "-", "-", "-")
+    table.add_row(str(browse_idx), "[italic]Enter manual path / Browse folder[/italic]", "-", "-", "-")
 
     console.print(table)
 
     while True:
         choice = Prompt.ask(
-            f"Selectați sursa [1-{browse_idx}]",
+            f"Select source [1-{browse_idx}]",
             default="1" if drives else str(browse_idx)
         )
         try:
             val = int(choice.strip())
             if 1 <= val <= len(drives):
                 chosen_drive = drives[val - 1]['path']
-                console.print(f"[bold green]✓ Sursă selectată:[/bold green] {chosen_drive}\n")
+                console.print(f"[bold green]✓ Selected source:[/bold green] {chosen_drive}\n")
                 return chosen_drive
             elif val == browse_idx:
                 while True:
-                    custom_path = Prompt.ask("Introduceți calea completă către folderul sursă (care conține Normal/ și Event/)")
+                    custom_path = Prompt.ask("Enter the full path to the source folder (containing Normal/ and Event/)")
                     custom_path = os.path.expanduser(custom_path.strip())
                     if os.path.isdir(custom_path):
                         clips = vantrue_sync.get_clips(custom_path)
                         if not clips:
-                            console.print("[yellow]Avertisment: Nu s-au găsit clipuri MP4 în subfolderele Normal/ sau Event/ din această cale.[/yellow]")
-                            if Confirm.ask("Doriți totuși să folosiți acest folder?", default=False):
+                            console.print("[yellow]Warning: No MP4 clips found in Normal/ or Event/ subfolders in this path.[/yellow]")
+                            if Confirm.ask("Do you still want to use this folder?", default=False):
                                 return custom_path
                         else:
-                            console.print(f"[bold green]✓ Sursă selectată ({len(clips)} clipuri):[/bold green] {custom_path}\n")
+                            console.print(f"[bold green]✓ Selected source ({len(clips)} clips):[/bold green] {custom_path}\n")
                             return custom_path
                     else:
-                        console.print(f"[bold red]Eroare: Calea '{custom_path}' nu există sau nu este director.[/bold red]")
+                        console.print(f"[bold red]Error: Path '{custom_path}' does not exist or is not a directory.[/bold red]")
         except ValueError:
-            console.print("[bold red]Vă rugăm să introduceți un număr valid.[/bold red]")
+            console.print("[bold red]Please enter a valid number.[/bold red]")
 
 def select_remote_destination():
     """
     Prompts user to select an rclone cloud remote or explicitly a local destination.
     """
-    console.print(Panel("[bold cyan]PASUL 2: Selectare Destinație Rclone Cloud[/bold cyan]", border_style="cyan"))
+    console.print(Panel("[bold cyan]STEP 2: Select Rclone Cloud Destination[/bold cyan]", border_style="cyan"))
     
     remotes = vantrue_sync.get_rclone_remotes()
     
-    table = Table(title="Remote-uri Cloud Rclone Detectate", box=box.ROUNDED)
+    table = Table(title="Detected Rclone Cloud Remotes", box=box.ROUNDED)
     table.add_column("#", style="bold yellow", justify="center", width=4)
-    table.add_column("Nume Remote Cloud", style="bold green")
-    table.add_column("Tip / Destinație", style="white")
+    table.add_column("Remote Name", style="bold green")
+    table.add_column("Type / Destination", style="white")
 
     for idx, r in enumerate(remotes, start=1):
-        table.add_row(str(idx), r, "Cont Cloud Rclone (Google Drive / OneDrive / etc.)")
+        table.add_row(str(idx), r, "Rclone Cloud Account (Google Drive / OneDrive / etc.)")
 
     local_idx = len(remotes) + 1
-    table.add_row(str(local_idx), "[italic]💻 Folder Local pe Disc (FĂRĂ upload în Cloud)[/italic]", "Salvare locală pe SSD/HDD")
+    table.add_row(str(local_idx), "[italic]Local Disk Folder (No Cloud upload)[/italic]", "Save locally to SSD/HDD")
 
     console.print(table)
 
     while True:
         choice = Prompt.ask(
-            f"Selectați destinația [1-{local_idx}]",
+            f"Select destination [1-{local_idx}]",
             default="1" if remotes else str(local_idx)
         )
         try:
             val = int(choice.strip())
             if 1 <= val <= len(remotes):
                 chosen_remote = remotes[val - 1]
-                console.print(f"\n[bold green]✓ Remote Cloud selectat:[/bold green] [bold cyan]{chosen_remote}[/bold cyan]")
+                console.print(f"\n[bold green]Selected Cloud remote:[/bold green] [bold cyan]{chosen_remote}[/bold cyan]")
                 
                 subfolder = Prompt.ask(
-                    "Introduceți subfolderul din Cloud (lăsați gol pentru rădăcină)",
+                    "Enter cloud subfolder (leave blank for root)",
                     default="Dashcam_Auto"
                 ).strip()
                 
@@ -182,44 +182,44 @@ def select_remote_destination():
                 else:
                     final_dest = chosen_remote
                 
-                console.print(f"[bold green]✓ Destinație finală Cloud:[/bold green] [bold yellow]{final_dest}[/bold yellow]\n")
+                console.print(f"[bold green]Final Cloud destination:[/bold green] [bold yellow]{final_dest}[/bold yellow]\n")
                 return final_dest, False
 
             elif val == local_idx:
                 console.print(Panel(
-                    "[bold red]ℹ️ AVERTISMENT IMPORTANT DESPRE SALVAREA LOCALĂ[/bold red]\n\n"
-                    "Ați selectat un folder local pe disc.\n"
-                    "• Fișierele [bold underline]NU vor fi încărcate în Google Drive sau alt cloud[/bold underline]!\n"
-                    "• Toate videoclipurile vor fi copiate pe stocarea locală a calculatorului (SSD/HDD),\n"
-                    "  consumând spațiu pe disk în directorul ales.\n",
-                    title="Atenție!",
+                    "[bold red]IMPORTANT: LOCAL STORAGE SELECTION[/bold red]\n\n"
+                    "You have selected a local disk folder.\n"
+                    "• Files will [bold underline]NOT be uploaded to Google Drive or any cloud[/bold underline]!\n"
+                    "• All videos will be copied to your computer's local storage (SSD/HDD),\n"
+                    "  consuming disk space in the chosen directory.\n",
+                    title="Warning",
                     border_style="yellow"
                 ))
                 
-                if not Confirm.ask("Sunteți sigur că doriți salvarea locală și NU încărcarea în Cloud?", default=False):
+                if not Confirm.ask("Are you sure you want local storage and NOT cloud upload?", default=False):
                     continue
 
-                local_path = Prompt.ask("Introduceți calea folderului local de destinație", default="./output_dashcam")
+                local_path = Prompt.ask("Enter destination local folder path", default="./output_dashcam")
                 local_path = os.path.expanduser(local_path.strip())
                 return local_path, True
 
         except ValueError:
-            console.print("[bold red]Vă rugăm să introduceți un număr valid.[/bold red]")
+            console.print("[bold red]Please enter a valid number.[/bold red]")
 
 def select_trips_interactive(trips, completed_trip_ids, completed_clips):
     """
     Displays trip summary in a rich table and asks for selection.
     """
-    console.print(Panel("[bold cyan]PASUL 3: Selectare Călătorii (Trips)[/bold cyan]", border_style="cyan"))
+    console.print(Panel("[bold cyan]STEP 3: Select Trips[/bold cyan]", border_style="cyan"))
     
-    table = Table(title=f"Trips Detectate ({len(trips)} călătorii)", box=box.ROUNDED)
+    table = Table(title=f"Detected Trips ({len(trips)} journeys)", box=box.ROUNDED)
     table.add_column("#", style="bold yellow", justify="center", width=4)
     table.add_column("Status", justify="center")
-    table.add_column("Start Călătorie", style="cyan")
-    table.add_column("Sfârșit Călătorie", style="cyan")
-    table.add_column("Clipuri Normale", justify="center", style="green")
-    table.add_column("Evenimente", justify="center", style="bold red")
-    table.add_column("Total Clipuri", justify="center", style="bold white")
+    table.add_column("Trip Start", style="cyan")
+    table.add_column("Trip End", style="cyan")
+    table.add_column("Normal Clips", justify="center", style="green")
+    table.add_column("Events", justify="center", style="bold red")
+    table.add_column("Total Clips", justify="center", style="bold white")
 
     for idx, trip in enumerate(trips, start=1):
         start_str = trip[0]['time'].strftime('%Y-%m-%d %H:%M:%S')
@@ -229,31 +229,31 @@ def select_trips_interactive(trips, completed_trip_ids, completed_clips):
         trip_id = f"{trip[0]['stamp']}_to_{trip[-1]['stamp']}"
 
         if trip_id in completed_trip_ids:
-            status = "[bold green]✓ Sincronizat[/bold green]"
+            status = "[bold green]✓ Synced[/bold green]"
         elif trip_id in completed_clips and completed_clips[trip_id]:
             done_count = len(completed_clips[trip_id])
-            status = f"[yellow]Parțial ({done_count}/{len(trip)})[/yellow]"
+            status = f"[yellow]Partial ({done_count}/{len(trip)})[/yellow]"
         else:
-            status = "[bold blue]Nou[/bold blue]"
+            status = "[bold blue]New[/bold blue]"
 
         event_str = f"[bold red]{events}[/bold red]" if events > 0 else "0"
         table.add_row(str(idx), status, start_str, end_str, str(normals), event_str, str(len(trip)))
 
     console.print(table)
-    console.print("[dim]Puteți selecta 'all' pentru toate, sau intervale precum '1,3,5-8'. Tastați 'q' pentru ieșire.[/dim]")
+    console.print("[dim]You can select 'all' for all trips, or ranges like '1,3,5-8'. Type 'q' to quit.[/dim]")
 
     while True:
-        sel_str = Prompt.ask("Selectați trip-urile pentru sincronizare", default="all").strip()
+        sel_str = Prompt.ask("Select trips to synchronize", default="all").strip()
         if sel_str.lower() in ['q', 'quit', 'exit']:
-            console.print("[yellow]Operațiune anulată de utilizator.[/yellow]")
+            console.print("[yellow]Operation aborted by user.[/yellow]")
             sys.exit(0)
         
         indices = vantrue_sync.parse_selection(sel_str, len(trips))
         if indices:
-            console.print(f"[bold green]✓ Au fost selectate {len(indices)} călătorii:[/bold green] {indices}\n")
+            console.print(f"[bold green]✓ Selected {len(indices)} trip(s):[/bold green] {indices}\n")
             return indices
         else:
-            console.print("[bold red]Selecție invalidă. Încercați din nou.[/bold red]")
+            console.print("[bold red]Invalid selection. Please try again.[/bold red]")
 
 def main():
     console.clear()
@@ -280,25 +280,25 @@ def main():
 
     if checkpoint:
         console.print(Panel(
-            f"[bold green]Sesiune anterioară detectată![/bold green]\n"
-            f"Ultima actualizare: {checkpoint.get('updated_at')}\n"
-            f"Trips finalizate anterior: {len(checkpoint.get('completed_trips', []))}\n",
-            title="Checkpoint Găsit",
+            f"[bold green]Previous session detected![/bold green]\n"
+            f"Last update: {checkpoint.get('updated_at')}\n"
+            f"Trips completed earlier: {len(checkpoint.get('completed_trips', []))}\n",
+            title="Checkpoint Found",
             border_style="green"
         ))
-        if Confirm.ask("Doriți să continuați de unde ați rămas (Resume)?", default=True):
+        if Confirm.ask("Do you want to continue where you left off (Resume)?", default=True):
             resume_mode = True
             completed_trip_ids = set(checkpoint.get("completed_trips", []))
             completed_clips = checkpoint.get("completed_clips", {})
         else:
-            console.print("[yellow]Checkpoint-ul anterior a fost resetat.[/yellow]")
+            console.print("[yellow]Previous checkpoint has been reset.[/yellow]")
             vantrue_sync.clear_checkpoint()
 
     # Step 4: Scan and Group Trips
-    with console.status("[bold green]Se scanează fișierele video de pe card...[/bold green]"):
+    with console.status("[bold green]Scanning video files on card...[/bold green]"):
         clips = vantrue_sync.get_clips(usb_dir)
         if not clips:
-            console.print("[bold red]Nu s-au găsit clipuri MP4 valide în folderele Normal/ sau Event/ ale acestei surse.[/bold red]")
+            console.print("[bold red]No valid MP4 clips found in Normal/ or Event/ folders of this source.[/bold red]")
             sys.exit(1)
         trips = vantrue_sync.group_into_trips(clips, gap_seconds=65)
 
@@ -316,19 +316,19 @@ def main():
     selected_indices = select_trips_interactive(trips, completed_trip_ids, completed_clips)
 
     # Step 6: Advanced Sync Settings
-    console.print(Panel("[bold cyan]PASUL 4: Opțiuni de Transfer[/bold cyan]", border_style="cyan"))
+    console.print(Panel("[bold cyan]STEP 4: Transfer Options[/bold cyan]", border_style="cyan"))
     
     mode_choice = Prompt.ask(
-        "Mod de transfer:\n"
-        "  [1] RAM Prefetch Pipeline (Recomandat: viteză maximă, 0 uzură SSD)\n"
-        "  [2] Direct USB -> Cloud (pentru sisteme cu memorie RAM foarte redusă)\n"
-        "Alegeți modul",
+        "Transfer mode:\n"
+        "  [1] RAM Prefetch Pipeline (Recommended: max speed, zero SSD wear)\n"
+        "  [2] Direct USB -> Cloud (for systems with very low RAM)\n"
+        "Choose mode",
         choices=["1", "2"],
         default="1"
     )
     mode = "ram" if mode_choice == "1" else "direct"
     
-    dry_run = Confirm.ask("Rulați în mod simulare (Dry-Run fără upload real)?", default=False)
+    dry_run = Confirm.ask("Run in simulation mode (Dry-Run without actual upload)?", default=False)
 
     # Locate GPX format file
     fmt_path = "gpx.fmt"
@@ -340,19 +340,19 @@ def main():
 
     # Summary Panel
     summary_text = (
-        f"[bold]Sursă:[/bold] {usb_dir}\n"
-        f"[bold]Destinație:[/bold] {remote_dest} {'[red](LOCAL DISK)[/red]' if is_local else '[green](CLOUD RCLONE)[/green]'}\n"
-        f"[bold]Trip-uri selectate:[/bold] {len(selected_indices)} călătorii\n"
-        f"[bold]Mod transfer:[/bold] {'RAM Prefetch Pipeline (Zero SSD Write)' if mode == 'ram' else 'Direct USB'}\n"
-        f"[bold]Simulare (Dry-Run):[/bold] {'DA' if dry_run else 'NU'}"
+        f"[bold]Source:[/bold] {usb_dir}\n"
+        f"[bold]Destination:[/bold] {remote_dest} {'[red](LOCAL DISK)[/red]' if is_local else '[green](CLOUD RCLONE)[/green]'}\n"
+        f"[bold]Selected Trips:[/bold] {len(selected_indices)} journeys\n"
+        f"[bold]Transfer Mode:[/bold] {'RAM Prefetch Pipeline (Zero SSD Write)' if mode == 'ram' else 'Direct USB'}\n"
+        f"[bold]Dry-Run Simulation:[/bold] {'YES' if dry_run else 'NO'}"
     )
-    console.print(Panel(summary_text, title="[bold green]Confirmare Configurație Sincronizare[/bold green]", border_style="green"))
+    console.print(Panel(summary_text, title="[bold green]Sync Configuration Confirmation[/bold green]", border_style="green"))
 
-    if not Confirm.ask("Porniți procesarea acum?", default=True):
-        console.print("[yellow]Sincronizare anulată.[/yellow]")
+    if not Confirm.ask("Start processing now?", default=True):
+        console.print("[yellow]Synchronization canceled.[/yellow]")
         sys.exit(0)
 
-    console.print("\n[bold green]🚀 Începe sincronizarea...[/bold green]\n")
+    console.print("\n[bold green]Starting synchronization...[/bold green]\n")
     
     # Execute upload for selected trips
     for idx in selected_indices:
@@ -370,9 +370,9 @@ def main():
         )
 
     console.print(Panel(
-        "[bold green]✓ Toate trip-urile selectate au fost procesate cu succes![/bold green]\n"
-        f"Destinație: {remote_dest}",
-        title="Succes",
+        "[bold green]All selected trips have been successfully processed.[/bold green]\n"
+        f"Destination: {remote_dest}",
+        title="Success",
         border_style="green"
     ))
     vantrue_sync.clear_checkpoint()
@@ -381,5 +381,5 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        console.print("\n[bold yellow]Sincronizare întreruptă de utilizator.[/bold yellow]")
+        console.print("\n[bold yellow]Synchronization interrupted by user.[/bold yellow]")
         sys.exit(0)

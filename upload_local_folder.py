@@ -62,37 +62,37 @@ def main():
 
     rclone_bin = find_rclone()
     if not rclone_bin:
-        console.print("[bold red]Eroare: 'rclone' nu a fost găsit în sistem.[/bold red]")
+        console.print("[bold red]Error: 'rclone' executable not found in PATH.[/bold red]")
         sys.exit(1)
 
     src_dir = os.path.abspath(args.src)
     if not os.path.isdir(src_dir):
-        console.print(f"[bold red]Eroare: Folderul sursă '{src_dir}' nu există.[/bold red]")
+        console.print(f"[bold red]Error: Source folder '{src_dir}' does not exist.[/bold red]")
         sys.exit(1)
 
     # Validate remote target has a colon
     dest = args.dest.strip()
     if ":" not in dest:
-        console.print(f"[bold red]Avertisment: Destinația '{dest}' nu conține ':' - va fi tratată ca destinație rclone remote '{dest}:'[/bold red]")
+        console.print(f"[bold yellow]Warning: Destination '{dest}' does not contain ':' - appending ':' to treat as rclone remote.[/bold yellow]")
         dest = f"{dest}:"
 
     action_name = "move" if args.delete_after else "copy"
 
     console.print(Panel(
-        f"[bold cyan]MIGRARE FOLDER LOCAL -> GOOGLE DRIVE[/bold cyan]\n\n"
-        f"[bold]Sursă locală:[/bold] {src_dir}\n"
-        f"[bold]Destinație Cloud:[/bold] {dest}\n"
-        f"[bold]Mod acțiune:[/bold] {'MUTARE (Șterge local după upload)' if args.delete_after else 'COPIERE (Păstrează copia locală)'}\n"
-        f"[bold]Transferuri paralele:[/bold] {args.transfers} fluxuri video simultane\n"
-        f"[bold]Optimizări:[/bold] Multipart direct pentru GPX/JSON, Drive Chunk 64M pentru video\n"
-        f"[bold]Simulare (Dry-Run):[/bold] {'DA' if args.dry_run else 'NU'}",
-        title="Configurație Migrare",
+        f"[bold cyan]MIGRATE LOCAL FOLDER -> GOOGLE DRIVE[/bold cyan]\n\n"
+        f"[bold]Local source:[/bold] {src_dir}\n"
+        f"[bold]Cloud destination:[/bold] {dest}\n"
+        f"[bold]Action mode:[/bold] {'MOVE (Delete local copy after upload)' if args.delete_after else 'COPY (Keep local copy)'}\n"
+        f"[bold]Parallel transfers:[/bold] {args.transfers} simultaneous video streams\n"
+        f"[bold]Optimizations:[/bold] Direct multipart for GPX/JSON, Drive chunk size {args.chunk_size}\n"
+        f"[bold]Dry-run simulation:[/bold] {'YES' if args.dry_run else 'NO'}",
+        title="Migration Settings",
         border_style="cyan"
     ))
 
     try:
-        if not Confirm.ask("Doriți să porniți încărcarea în Cloud acum?", default=True):
-            console.print("[yellow]Operațiune anulată.[/yellow]")
+        if not Confirm.ask("Start cloud upload now?", default=True):
+            console.print("[yellow]Operation canceled.[/yellow]")
             sys.exit(0)
     except Exception:
         pass
@@ -119,7 +119,7 @@ def main():
     if args.dry_run:
         cmd.append("--dry-run")
 
-    console.print(f"\n[bold green]🚀 Se lansează rclone optimizat pentru Google Drive...[/bold green]\n")
+    console.print(f"\n[bold green]Launching rclone...[/bold green]\n")
     
     t0 = time.time()
     try:
@@ -127,10 +127,10 @@ def main():
         elapsed = time.time() - t0
         if res.returncode == 0:
             console.print(Panel(
-                f"[bold green]✓ Migrarea s-a finalizat cu succes![/bold green]\n"
-                f"Timp total: {elapsed:.1f} secunde\n"
-                f"Destinație: {dest}",
-                title="Succes",
+                f"[bold green]Migration completed successfully.[/bold green]\n"
+                f"Total time: {elapsed:.1f}s\n"
+                f"Destination: {dest}",
+                title="Success",
                 border_style="green"
             ))
             if args.delete_after and os.path.exists(src_dir):
@@ -139,9 +139,9 @@ def main():
                 except Exception:
                     pass
         else:
-            console.print(f"[bold red]❌ Rclone a întâmpinat o eroare (exit code {res.returncode}).[/bold red]")
+            console.print(f"[bold red]Rclone exited with error (exit code {res.returncode}).[/bold red]")
     except KeyboardInterrupt:
-        console.print("\n[bold yellow]Întrerupt de utilizator. Puteți relua oricând aceeași comandă fără a pierde datele deja urcate.[/bold yellow]")
+        console.print("\n[bold yellow]Aborted by user. You can resume at any time without losing uploaded data.[/bold yellow]")
 
 if __name__ == "__main__":
     main()

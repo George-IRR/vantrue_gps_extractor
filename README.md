@@ -2,6 +2,8 @@
 
 A command-line tool and interactive terminal interface for organizing, extracting GPS tracks (GPX), generating journey manifests, and syncing Vantrue dashcam footage to cloud storage via `rclone`.
 
+Tested and verified on **Vantrue Element 1 (Vantrue E1)**. Compatible with other Vantrue dashcams (E2, E3, N2 Pro, N4, N5, Nexus series) sharing the same timestamp naming convention and embedded Novatek GPS telemetry streams.
+
 ## Features
 
 - **RAM Pipeline (Zero SSD Wear)**: Stages clips and extracts metadata in memory (`/dev/shm`) before upload, eliminating intermediate writes to local disk drives.
